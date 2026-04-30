@@ -43,5 +43,18 @@ class GPT2Layer(nn.Module):
     """
 
     ### YOUR CODE HERE
-    raise NotImplementedError
+    # Apply layer normalization before attention.
+    norm_hidden_states = self.attention_layer_norm(hidden_states)
+    #Compute self attention.
+    attention = self.self_attention(norm_hidden_states, attention_mask)
+    #Apply add
+    interm_out = self.add(hidden_states, attention, self.attention_dense, self.attention_dropout)
+    #Apply layer normalization before MLP
+    interm_out_norm = self.out_layer_norm(interm_out)
+    #Apply MLP
+    MLP_hidden = self.interm_dense(interm_out_norm)
+    MLP_output = self.interm_af(MLP_hidden)
+    #Apply add
+    output = self.add(interm_out, MLP_output, self.out_dense, self.out_dropout)
+    return output
 
