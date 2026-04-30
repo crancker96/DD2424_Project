@@ -29,8 +29,12 @@ class GPT2Layer(nn.Module):
         before it is added to the sub-layer input. WE DO NOT APPLY THE LAYER NORM
         IN THIS FUNCTION.
     """
-    ### YOUR CODE HERE
-    raise NotImplementedError
+    #Apply transformation
+    transformed = dense_layer(output)
+    #Apply dropout
+    dropped = dropout(transformed)
+    #Add residual connection
+    return input + dropped
 
 
   def forward(self, hidden_states, attention_mask):
