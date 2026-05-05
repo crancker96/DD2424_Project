@@ -41,12 +41,12 @@ class CausalSelfAttention(nn.Module):
 
     # create and apply casual mask, 1s above diagonal, blocks future positions
     causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=query.device), diagonal=1).bool()
-    e_scores = e_scores.masked_fill(causal_mask, float(-inf))
+    e_scores = e_scores.masked_fill(causal_mask, -10000)
 
     # adds padding mask 
     e_scores = e_scores + attention_mask
 
-    # softmax to get sum of 1, scores set to -inf will be 0 in softmax exp(-inf) = 0
+    # softmax to get sum of 1, scores set to -10000 will be 0 in softmax exp(-inf) = 0
     attention_weights = torch.softmax(e_scores, dim=-1)
 
     # used dropeout rate from config of 0.1
