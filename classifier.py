@@ -69,17 +69,12 @@ class GPT2SentimentClassifier(torch.nn.Module):
     ###       HINT: You should consider what is an appropriate return value given that
     ###       the training loop currently uses F.cross_entropy as the loss function.
     ### YOUR CODE HERE
-    outputs = self.gpt(input_ids, attention_mask=attention_mask) 
+    outputs = self.gpt(input_ids, attention_mask=attention_mask)
+  
+    sentence_representation = outputs['last_token']
 
-    last_hidden_state = outputs.last_hidden_state 
-
-    last_token_indices = torch.sum(attention_mask, dim=1) - 1
-
-    batch_size = input_ids.shape[0]
-    sentence_representation = last_hidden_state[torch.arange(batch_size), last_token_indices]
-
-    dropped_out = self.dropout(sentence_representation)
-    logits = self.sentiment_classifier(dropped_out)
+    sentence_representation = self.dropout(sentence_representation)
+    logits = self.sentiment_classifier(sentence_representation)
 
     return logits
 
