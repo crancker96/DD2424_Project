@@ -61,7 +61,43 @@ class AdamW(Optimizer):
                 ###
                 ###       Refer to the default project handout for more details.
                 ### YOUR CODE HERE
-                raise NotImplementedError
+                                
+                # Initialize moments and step counter on first update
+                if len(state) == 0:
+                    state["step"] = 0
+                    state["mt"] = torch.zeros_like(p.data)
+                    state["vt"] = torch.zeros_like(p.data)
+
+                state["step"] += 1
+                mt = state["mt"]
+                vt = state["vt"]
+
+                beta1 = group["betas"][0]
+                beta2 = group["betas"] [1]
+
+                # Update biased first and second moment estimates
+                mt = beta1 * mt + (1 - beta1) * grad
+                vt = beta2 * vt + (1 - beta2) *  grad * grad
+
+                state["mt"] = mt
+                state["vt"] = vt
+
+                # Bias correction: counteracts the zero-initialization of the moments
+                if group["correct_bias"]:
+                    mt_hat = mt / (1 - beta1 ** state["step"])
+                    vt_hat = vt / (1 - beta2 ** state["step"])
+                else:
+                    mt_hat = mt
+                    vt_hat = vt
+
+                denom = vt_hat.sqrt() + group["eps"]
+                p.data = p.data - alpha * mt_hat / denom
+
+                # Weight decay applied directly to weights (decoupled from gradient update, hence AdamW)
+                if group["weight_decay"] != 0:
+                    p.data = p.data - alpha * group["weight_decay"] * p.data
+                
+
 
 
         return loss
