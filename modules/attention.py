@@ -32,9 +32,32 @@ class CausalSelfAttention(nn.Module):
     return proj
 
   def attention(self, key, query, value, attention_mask):
+    # query shape: [bs, heads, seq_len, 64]
+    d_k = query.size(3)
+    seq_len = query.size(2)
 
-    ### YOUR CODE HERE
-    raise NotImplementedError
+    # computing scaled dot product to get similarity/relevance scores
+    e_scores = torch.matmul(query, key.transpose(-2, -1)) / (d_k ** 0.5)
+
+    # create and apply casual mask, 1s above diagonal, blocks future positions
+    causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=query.device), diagonal=1).bool()
+    e_scores = e_scores.masked_fill(causal_mask, -10000)
+
+    # adds padding mask 
+    e_scores = e_scores + attention_mask
+
+    # softmax to get sum of 1, scores set to -10000 will be 0 in softmax exp(-inf) = 0
+    attention_weights = torch.softmax(e_scores, dim=-1)
+
+    # used dropeout rate from config of 0.1
+    attention_weights = self.dropout(attention_weights)
+
+    # weighted sum of values
+    attention_output = torch.matmul(attention_weights, value)
+
+    # merges all heads back reverse to what was done in transform()
+    attention_output = rearrange(attention_output, 'b h t d -> b t (h d)')
+    return attention_output
 
 
   def forward(self, hidden_states, attention_mask):
