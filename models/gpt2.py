@@ -104,10 +104,8 @@ class GPT2Model(GPTPreTrainedModel):
     GPT-2 uses weight tying with the input word embeddings. The logits are the dot product between output hidden states
     and the word embedding weights:
 
-      return hidden_state(s) * E^T
-    """
-    ### YOUR CODE HERE
-    raise NotImplementedError
+      return hidden_state(s) * E^T"""
+    return hidden_state @ self.word_embedding.weight.T
 
 
   @classmethod
