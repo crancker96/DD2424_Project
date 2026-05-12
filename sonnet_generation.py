@@ -60,8 +60,9 @@ class SonnetGPT(nn.Module):
     not just the last token! This will allow our model to learn the natural language distribution that composes sonnets,
     not just the distribution over next tokens for the last token!
     """
-    ### YOUR CODE HERE
-    raise NotImplementedError
+    output = self.gpt(input_ids, attention_mask) # runs the GPTs own forward()
+    logits = self.gpt.hidden_state_to_token(output['last_hidden_state']) # turns last hidden state to logits
+    return logits
 
 
   def get_device(self):
