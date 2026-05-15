@@ -44,15 +44,24 @@ def seed_everything(seed=11711):
 class SonnetGPT(nn.Module):
   """Your GPT-2 Model designed for paraphrase detection."""
 
-  def __init__(self, args):
+  def __init__(self, args, use_lora=False):
     super().__init__()
-    self.gpt = GPT2Model.from_pretrained(model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads)
+    self.gpt = GPT2Model.from_pretrained(model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads, use_lora=use_lora)
     self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     self.tokenizer.pad_token = self.tokenizer.eos_token
 
     # By default, fine-tune the full model. TODO: this is maybe not idea.
-    for param in self.gpt.parameters():
-      param.requires_grad = True
+    if use_lora:
+      # freeze everything, only lora params will be trainable
+      for param in self.gpt.parameters():
+          param.requires_grad = False
+      # unfreeze only lora params
+      for name, param in self.gpt.named_parameters():
+          if 'lora' in name:
+              param.requires_grad = True
+    else:
+      for param in self.gpt.parameters():
+          param.requires_grad = True
 
   def forward(self, input_ids, attention_mask):
     """
@@ -143,8 +152,17 @@ def train(args):
   held_out_sonnet_dataset = SonnetsDataset(args.held_out_sonnet_path)
 
   args = add_arguments(args)
-  model = SonnetGPT(args)
+  args.use_lora = True
+  model = SonnetGPT(args, use_lora=args.use_lora)
   model = model.to(device)
+
+  # testing the matrices
+  total = sum(p.numel() for p in model.parameters())
+  trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+  print(f"Trainable: {trainable:,} / {total:,} ({100 * trainable / total:.2f}%)")
+  for name, param in model.named_parameters():
+    if param.requires_grad:
+      print(f"  {name}")
 
   lr = args.lr
   optimizer = AdamW(model.parameters(), lr=lr)
@@ -191,7 +209,7 @@ def generate_submission_sonnets(args):
   device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
   saved = torch.load(f'{args.epochs-1}_{args.filepath}', weights_only=False)
 
-  model = SonnetGPT(saved['args'])
+  model = SonnetGPT(saved['args'], use_lora=getattr(saved['args'], 'use_lora', False))
   model.load_state_dict(saved['model'])
   model = model.to(device)
   model.eval()

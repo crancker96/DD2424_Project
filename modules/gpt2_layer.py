@@ -5,10 +5,10 @@ import torch.nn.functional as F
 from modules.attention import CausalSelfAttention
 
 class GPT2Layer(nn.Module):
-  def __init__(self, config):
+  def __init__(self, config, use_lora=False, lora_rank=8):
     super().__init__()
     # Multi-head attention.
-    self.self_attention = CausalSelfAttention(config)
+    self.self_attention = CausalSelfAttention(config, use_lora=use_lora, lora_rank=lora_rank)
     # Add-norm for multi-head attention.
     self.attention_dense = nn.Linear(config.hidden_size, config.hidden_size)
     self.attention_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
