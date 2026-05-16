@@ -152,7 +152,6 @@ def train(args):
   held_out_sonnet_dataset = SonnetsDataset(args.held_out_sonnet_path)
 
   args = add_arguments(args)
-  args.use_lora = True
   model = SonnetGPT(args, use_lora=args.use_lora)
   model = model.to(device)
 
@@ -253,6 +252,7 @@ def get_args():
 
   parser.add_argument("--batch_size", help='The training batch size.', type=int, default=8)
   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+  parser.add_argument("--use_lora", action='store_true', help="Use LoRA for finetuning.")
   parser.add_argument("--model_size", type=str, help="The model size as specified on hugging face.",
                       choices=['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'], default='gpt2')
 
