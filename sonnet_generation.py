@@ -26,6 +26,7 @@ from datasets import (
 from models.gpt2 import GPT2Model
 
 from optimizer import AdamW
+from evaluation import test_sonnet
 
 TQDM_DISABLE = False
 
@@ -126,6 +127,23 @@ class SonnetGPT(nn.Module):
     return token_ids, generated_output
 
 
+def print_run_summary(args, epoch_losses):
+  print(f"\n{'='*60}")
+  print("  Training complete — run config")
+  print(f"{'='*60}")
+  print(f"  model:      {args.model_size}")
+  print(f"  use_lora:   {args.use_lora}")
+  print(f"  lora_rank:  {getattr(args, 'lora_rank', 8)}")
+  print(f"  lr:         {args.lr}")
+  print(f"  epochs:     {args.epochs}")
+  print(f"  batch_size: {args.batch_size}")
+  print(f"  temperature:{args.temperature}  top_p:{args.top_p}")
+  print(f"\n  Loss per epoch:")
+  for i, loss in enumerate(epoch_losses):
+    print(f"    epoch {i}: {loss:.3f}")
+  print(f"{'='*60}\n")
+
+
 def save_model(model, optimizer, args, filepath):
   save_info = {
     'model': model.state_dict(),
@@ -166,6 +184,8 @@ def train(args):
   lr = args.lr
   optimizer = AdamW(model.parameters(), lr=lr)
 
+  epoch_losses = []
+
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
     model.train()
@@ -191,16 +211,38 @@ def train(args):
       num_batches += 1
 
     train_loss = train_loss / num_batches
+    epoch_losses.append(train_loss)
     print(f"Epoch {epoch}: train loss :: {train_loss :.3f}.")
-    print('Generating several output sonnets...')
-    model.eval()
-    for batch in held_out_sonnet_dataset:
-      encoding = model.tokenizer(batch[1], return_tensors='pt', padding=True, truncation=True).to(device)
-      output = model.generate(encoding['input_ids'], temperature=args.temperature, top_p=args.top_p)
-      print(f'{batch[1]}{output[1]}\n\n')
 
-    # TODO: consider a stopping condition to prevent overfitting on the small dataset of sonnets.
-    save_model(model, optimizer, args, f'{epoch}_{args.filepath}')
+    if epoch == 0 or epoch == args.epochs - 1:
+      save_model(model, optimizer, args, f'{epoch}_{args.filepath}')
+
+  def generate_from_checkpoint(filepath, label, save_to=None):
+    saved = torch.load(filepath, weights_only=False)
+    m = SonnetGPT(saved['args'], use_lora=getattr(saved['args'], 'use_lora', False))
+    m.load_state_dict(saved['model'])
+    m = m.to(device)
+    m.eval()
+    print(f"\n{'='*60}")
+    print(f"  Generated from {label}")
+    print(f"{'='*60}\n")
+    sonnets = []
+    for batch in held_out_sonnet_dataset:
+      encoding = m.tokenizer(batch[1], return_tensors='pt', padding=True, truncation=True).to(device)
+      output = m.generate(encoding['input_ids'], temperature=args.temperature, top_p=args.top_p)
+      print(f'{batch[1]}{output[1]}\n\n')
+      sonnets.append((batch[0], f'{batch[1]}{output[1]}\n\n'))
+    if save_to:
+      with open(save_to, 'w+') as f:
+        f.write('--Generated Sonnets-- \n\n')
+        for sonnet_id, text in sonnets:
+          f.write(f'\n{sonnet_id}\n{text}')
+
+  generate_from_checkpoint(f'0_{args.filepath}', 'epoch 0 (first)')
+  generate_from_checkpoint(f'{args.epochs - 1}_{args.filepath}', f'epoch {args.epochs - 1} (last)', save_to=args.sonnet_out)
+  score = test_sonnet(test_path=args.sonnet_out)
+  print(f"ChrF score: {score:.2f}")
+  print_run_summary(args, epoch_losses)
 
 
 @torch.no_grad()
@@ -284,4 +326,4 @@ if __name__ == "__main__":
   args.filepath = f'{args.epochs}-{args.lr}-sonnet.pt'  # Save path.
   seed_everything(args.seed)  # Fix the seed for reproducibility.
   train(args)
-  generate_submission_sonnets(args)
+  # generate_submission_sonnets(args)
