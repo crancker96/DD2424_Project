@@ -59,6 +59,133 @@ class CausalSelfAttention(nn.Module):
     attention_output = rearrange(attention_output, 'b h t d -> b t (h d)')
     return attention_output
 
+  def torch_flash_attention(self, key, query, value, attention_mask, causal=True):
+
+    # query/key/value:
+    # [B, H, N, D]
+
+    out = nn.functional.scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask=attention_mask,
+        dropout_p=0.0,
+        is_causal=True
+    )
+    B, H, N, D = out.shape
+
+    # transpose to [B, N, H, D]
+    out = out.transpose(1, 2)
+
+    # merge heads
+    out = out.contiguous().view(B, N, H * D)
+    return out
+  
+  def flash_attention(self, key, query, value, attention_mask, causal=True):
+    """
+    query, key, value:
+        [B, H, N, D]
+    """
+
+    B, H, N, D = query.shape
+
+    device = query.device
+
+    # tile sizes
+    B_c = min(128, N)
+    B_r = min(128, N)
+
+    T_c = (N + B_c - 1) // B_c
+    T_r = (N + B_r - 1) // B_r
+
+    scale = D ** -0.5
+
+    O = torch.zeros_like(query)
+
+    # running stats
+    l = torch.zeros(B, H, N, device=device)
+    m = torch.full((B, H, N), -float("inf"), device=device)
+
+    for i in range(T_r):
+
+      r_start = i * B_r
+      r_end = min((i + 1) * B_r, N)
+
+      q = query[:, :, r_start:r_end, :]
+      O_i = O[:, :, r_start:r_end, :].clone()
+
+      l_i = l[:, :, r_start:r_end].clone()
+      m_i = m[:, :, r_start:r_end].clone()
+
+      for j in range(T_c):
+
+        c_start = j * B_c
+        c_end = min((j + 1) * B_c, N)
+
+        k = key[:, :, c_start:c_end, :]
+        v = value[:, :, c_start:c_end, :]
+
+        # attention scores
+        S = torch.matmul(q, k.transpose(-2, -1)) * scale
+        # [B,H,B_r,B_c]
+
+        # causal mask
+        if causal:
+          q_idx = torch.arange(r_start, r_end, device=device)
+          k_idx = torch.arange(c_start, c_end, device=device)
+
+          mask = q_idx[:, None] >= k_idx[None, :]
+          S = S.masked_fill(~mask, -float("inf"))
+
+        # row max
+        m_ij = S.max(dim=-1).values
+
+        # exponentials
+        P = torch.exp(S - m_ij.unsqueeze(-1))
+
+        # row sums
+        l_ij = P.sum(dim=-1)
+
+        # updated max
+        m_new = torch.maximum(m_i, m_ij)
+
+        # correction factors
+        alpha = torch.exp(m_i - m_new)
+        beta = torch.exp(m_ij - m_new)
+
+        # updated normalization
+        l_new = alpha * l_i + beta * l_ij
+
+        # weighted values
+        PV = torch.matmul(P, v)
+
+        # output update
+        O_i = (
+            ((alpha * l_i) / l_new).unsqueeze(-1) * O_i
+            + (beta / l_new).unsqueeze(-1) * PV
+        )
+
+        # save stats
+        l_i = l_new
+        m_i = m_new
+
+      # write back
+      O[:, :, r_start:r_end, :] = O_i
+      l[:, :, r_start:r_end] = l_i
+      m[:, :, r_start:r_end] = m_i
+
+    B, H, N, D = O.shape
+
+    # transpose to [B, N, H, D]
+    O = O.transpose(1, 2)
+
+    # merge heads
+    O = O.contiguous().view(B, N, H * D)
+    return O
+
+
+
+
 
   def forward(self, hidden_states, attention_mask):
     """
@@ -74,5 +201,5 @@ class CausalSelfAttention(nn.Module):
     query_layer = self.transform(hidden_states, self.query)
     
     # Calculate the multi-head attention.
-    attn_value = self.attention(key_layer, query_layer, value_layer, attention_mask)
+    attn_value = self.torch_flash_attention(key_layer, query_layer, value_layer, attention_mask)
     return attn_value
