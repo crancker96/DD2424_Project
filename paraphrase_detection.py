@@ -55,7 +55,7 @@ class ParaphraseGPT(nn.Module):
 
     # By default, fine-tune the full model.
     for param in self.gpt.parameters():
-      param.requires_grad = True
+      param.requires_grad = False
 
   def forward(self, input_ids, attention_mask):
     """
