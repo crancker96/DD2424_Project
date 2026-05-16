@@ -55,7 +55,7 @@ class ParaphraseGPT(nn.Module):
 
     # By default, fine-tune the full model.
     for param in self.gpt.parameters():
-      param.requires_grad = True
+      param.requires_grad = False
 
   def forward(self, input_ids, attention_mask):
     """
@@ -72,7 +72,11 @@ class ParaphraseGPT(nn.Module):
 
     'Takes a batch of sentences and produces embeddings for them.'
     ### YOUR CODE HERE
-    raise NotImplementedError
+    outputs = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
+    last_token = outputs['last_token']
+    logits = self.paraphrase_detection_head(last_token)
+    return logits
+
 
 
 
@@ -124,6 +128,7 @@ def train(args):
       b_ids = b_ids.to(device)
       b_mask = b_mask.to(device)
       labels = labels.to(device)
+      labels = torch.where(labels == 8505, 1, 0)
 
       # Compute the loss, gradients, and update the model's parameters.
       optimizer.zero_grad()
@@ -195,7 +200,7 @@ def get_args():
   parser.add_argument("--para_test_out", type=str, default="predictions/para-test-output.csv")
 
   parser.add_argument("--seed", type=int, default=11711)
-  parser.add_argument("--epochs", type=int, default=10)
+  parser.add_argument("--epochs", type=int, default=10) #epochs
   parser.add_argument("--use_gpu", action='store_true')
 
   parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
