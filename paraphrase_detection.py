@@ -13,6 +13,7 @@ trains and evaluates your ParaphraseGPT model and writes the required submission
 
 import argparse
 import random
+import time
 import torch
 
 import numpy as np
@@ -48,32 +49,61 @@ def seed_everything(seed=11711):
 class ParaphraseGPT(nn.Module):
   """Your GPT-2 Model designed for paraphrase detection."""
 
-  def __init__(self, args):
+  def __init__(self, args, use_lora=False):
     super().__init__()
-    self.gpt = GPT2Model.from_pretrained(model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads)
+    self.gpt = GPT2Model.from_pretrained(
+      model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads,
+      use_lora=use_lora,
+      lora_rank=getattr(args, 'lora_rank', 8),
+    )
     self.paraphrase_detection_head = nn.Linear(args.d, 2)  # Paraphrase detection has two outputs: 1 (yes) or 0 (no).
 
-    # By default, fine-tune the full model.
-    for param in self.gpt.parameters():
-      param.requires_grad = True
+    if use_lora:
+      # Freeze base GPT-2; only LoRA params train. Classification head stays trainable.
+      for param in self.gpt.parameters():
+        param.requires_grad = False
+      for name, param in self.gpt.named_parameters():
+        if 'lora' in name:
+          param.requires_grad = True
+    else:
+      for param in self.gpt.parameters():
+        param.requires_grad = True
 
   def forward(self, input_ids, attention_mask):
-    """
-    TODO: Predict the label of the token using the paraphrase_detection_head Linear layer.
+    # Predict the next token after the cloze prompt. Labels are tokenized "yes"/"no"
+    # (token IDs 8505 / 3919), so logits must be over the full vocab. Project the
+    # last non-pad token's hidden state through GPT-2's tied embedding matrix.
+    outputs = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
+    last_token = outputs['last_token']
+    logits = self.paraphrase_detection_head(last_token)
+    return logits
 
-    We structure the input as:
 
-      'Is "{s1}" a paraphrase of "{s2}"? Answer "yes" or "no": '
 
-    So you want to find the prediction for the next token at the end of this sentence. Optimistically, it will be the
-    token "yes" (byte pair encoding index of 8505) for examples that are paraphrases or "no" (byte pair encoding index
-     of 3919) for examples that are not paraphrases.
-    """
-
-    'Takes a batch of sentences and produces embeddings for them.'
-    ### YOUR CODE HERE
-    raise NotImplementedError
-
+def print_run_summary(args, epoch_losses, epoch_dev_accs, epoch_times=None,
+                      total_train_time=None, peak_mem_gb=None, best_dev_acc=None):
+  print(f"\n{'='*60}")
+  print("  Training complete — run config")
+  print(f"{'='*60}")
+  print(f"  model:      {args.model_size}")
+  print(f"  use_lora:   {getattr(args, 'use_lora', False)}")
+  print(f"  lora_rank:  {getattr(args, 'lora_rank', 8)}")
+  print(f"  lr:         {args.lr}")
+  print(f"  epochs:     {args.epochs}")
+  print(f"  batch_size: {args.batch_size}")
+  if total_train_time is not None:
+    print(f"  train_time: {total_train_time:.1f}s "
+          f"({total_train_time/60:.2f} min, "
+          f"avg {total_train_time/args.epochs:.1f}s/epoch)")
+  if peak_mem_gb is not None:
+    print(f"  peak_mem:   {peak_mem_gb:.3f} GB")
+  if best_dev_acc is not None:
+    print(f"  best_dev_acc: {best_dev_acc:.4f}")
+  print(f"\n  Per-epoch (loss / dev_acc / time):")
+  for i, (loss, acc) in enumerate(zip(epoch_losses, epoch_dev_accs)):
+    t_str = f"  ({epoch_times[i]:.1f}s)" if epoch_times is not None else ""
+    print(f"    epoch {i}: loss {loss:.3f}  dev_acc {acc:.4f}{t_str}")
+  print(f"{'='*60}\n")
 
 
 def save_model(model, optimizer, args, filepath):
@@ -106,18 +136,30 @@ def train(args):
                                    collate_fn=para_dev_data.collate_fn)
 
   args = add_arguments(args)
-  model = ParaphraseGPT(args)
+  model = ParaphraseGPT(args, use_lora=args.use_lora)
   model = model.to(device)
+
+  total = sum(p.numel() for p in model.parameters())
+  trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+  print(f"Trainable: {trainable:,} / {total:,} ({100 * trainable / total:.2f}%)")
 
   lr = args.lr
   optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
   best_dev_acc = 0
+
+  epoch_losses = []
+  epoch_dev_accs = []
+  epoch_times = []
+  if device.type == 'cuda':
+    torch.cuda.reset_peak_memory_stats()
+  train_start = time.time()
 
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
     model.train()
     train_loss = 0
     num_batches = 0
+    epoch_start = time.time()
     for batch in tqdm(para_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
       # Get the input and move it to the gpu (I do not recommend training this model on CPU).
       b_ids, b_mask, labels = batch['token_ids'], batch['attention_mask'], batch['labels'].flatten()
@@ -136,6 +178,11 @@ def train(args):
       train_loss += loss.item()
       num_batches += 1
 
+    if device.type == 'cuda':
+      torch.cuda.synchronize()
+    epoch_duration = time.time() - epoch_start
+    epoch_times.append(epoch_duration)
+
     train_loss = train_loss / num_batches
 
     dev_acc, dev_f1, *_ = model_eval_paraphrase(para_dev_dataloader, model, device)
@@ -144,7 +191,26 @@ def train(args):
       best_dev_acc = dev_acc
       save_model(model, optimizer, args, args.filepath)
 
-    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc :: {dev_acc :.3f}")
+    epoch_losses.append(train_loss)
+    epoch_dev_accs.append(dev_acc)
+    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc :: {dev_acc :.3f}  time :: {epoch_duration:.1f}s")
+
+  total_train_time = time.time() - train_start
+  peak_mem_gb = (torch.cuda.max_memory_allocated() / 1024**3) if device.type == 'cuda' else None
+  print(f"\nTotal training time: {total_train_time:.1f}s "
+        f"({total_train_time/60:.2f} min, "
+        f"avg {total_train_time/args.epochs:.1f}s/epoch)")
+  if peak_mem_gb is not None:
+    print(f"Peak GPU memory:     {peak_mem_gb:.3f} GB\n")
+  else:
+    print()
+
+  print(f"Dev accuracy: {best_dev_acc:.4f}")
+  print_run_summary(args, epoch_losses, epoch_dev_accs,
+                    epoch_times=epoch_times,
+                    total_train_time=total_train_time,
+                    peak_mem_gb=peak_mem_gb,
+                    best_dev_acc=best_dev_acc)
 
 
 @torch.no_grad()
@@ -153,7 +219,7 @@ def test(args):
   device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
   saved = torch.load(args.filepath)
 
-  model = ParaphraseGPT(saved['args'])
+  model = ParaphraseGPT(saved['args'], use_lora=getattr(saved['args'], 'use_lora', False))
   model.load_state_dict(saved['model'])
   model = model.to(device)
   model.eval()
@@ -200,6 +266,8 @@ def get_args():
 
   parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+  parser.add_argument("--use_lora", action='store_true', help="Use LoRA for finetuning.")
+  parser.add_argument("--lora_rank", type=int, default=8, help="LoRA rank (only used when --use_lora is set).")
   parser.add_argument("--model_size", type=str,
                       help="The model size as specified on hugging face. DO NOT use the xl model.",
                       choices=['gpt2', 'gpt2-medium', 'gpt2-large'], default='gpt2')
@@ -229,7 +297,8 @@ def add_arguments(args):
 
 if __name__ == "__main__":
   args = get_args()
-  args.filepath = f'{args.epochs}-{args.lr}-paraphrase.pt'  # Save path.
+  lora_tag = f'-lora_r{args.lora_rank}' if args.use_lora else ''
+  args.filepath = f'{args.epochs}-{args.lr}{lora_tag}-paraphrase.pt'  # Save path.
   seed_everything(args.seed)  # Fix the seed for reproducibility.
   train(args)
   test(args)

@@ -9,6 +9,7 @@ trains your SonnetGPT model and writes the required submission files.
 
 import argparse
 import random
+import time
 import torch
 
 import numpy as np
@@ -47,7 +48,11 @@ class SonnetGPT(nn.Module):
 
   def __init__(self, args, use_lora=False):
     super().__init__()
-    self.gpt = GPT2Model.from_pretrained(model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads, use_lora=use_lora)
+    self.gpt = GPT2Model.from_pretrained(
+      model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads,
+      use_lora=use_lora,
+      lora_rank=getattr(args, 'lora_rank', 8),
+    )
     self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -127,7 +132,7 @@ class SonnetGPT(nn.Module):
     return token_ids, generated_output
 
 
-def print_run_summary(args, epoch_losses):
+def print_run_summary(args, epoch_losses, epoch_times=None, total_train_time=None, peak_mem_gb=None):
   print(f"\n{'='*60}")
   print("  Training complete — run config")
   print(f"{'='*60}")
@@ -138,9 +143,16 @@ def print_run_summary(args, epoch_losses):
   print(f"  epochs:     {args.epochs}")
   print(f"  batch_size: {args.batch_size}")
   print(f"  temperature:{args.temperature}  top_p:{args.top_p}")
+  if total_train_time is not None:
+    print(f"  train_time: {total_train_time:.1f}s "
+          f"({total_train_time/60:.2f} min, "
+          f"avg {total_train_time/args.epochs:.1f}s/epoch)")
+  if peak_mem_gb is not None:
+    print(f"  peak_mem:   {peak_mem_gb:.3f} GB")
   print(f"\n  Loss per epoch:")
   for i, loss in enumerate(epoch_losses):
-    print(f"    epoch {i}: {loss:.3f}")
+    t_str = f"  ({epoch_times[i]:.1f}s)" if epoch_times is not None else ""
+    print(f"    epoch {i}: {loss:.3f}{t_str}")
   print(f"{'='*60}\n")
 
 
@@ -185,12 +197,17 @@ def train(args):
   optimizer = AdamW(model.parameters(), lr=lr)
 
   epoch_losses = []
+  epoch_times = []
+  if device.type == 'cuda':
+    torch.cuda.reset_peak_memory_stats()
+  train_start = time.time()
 
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
     model.train()
     train_loss = 0
     num_batches = 0
+    epoch_start = time.time()
 
     for batch in tqdm(sonnet_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
       # Get the input and move it to the gpu (I do not recommend training this model on CPU).
@@ -210,12 +227,27 @@ def train(args):
       train_loss += loss.item()
       num_batches += 1
 
+    if device.type == 'cuda':
+      torch.cuda.synchronize()
+    epoch_duration = time.time() - epoch_start
+    epoch_times.append(epoch_duration)
+
     train_loss = train_loss / num_batches
     epoch_losses.append(train_loss)
-    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}.")
+    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}.  time :: {epoch_duration:.1f}s")
 
     if epoch == 0 or epoch == args.epochs - 1:
       save_model(model, optimizer, args, f'{epoch}_{args.filepath}')
+
+  total_train_time = time.time() - train_start
+  peak_mem_gb = (torch.cuda.max_memory_allocated() / 1024**3) if device.type == 'cuda' else None
+  print(f"\nTotal training time: {total_train_time:.1f}s "
+        f"({total_train_time/60:.2f} min, "
+        f"avg {total_train_time/args.epochs:.1f}s/epoch)")
+  if peak_mem_gb is not None:
+    print(f"Peak GPU memory:     {peak_mem_gb:.3f} GB\n")
+  else:
+    print()
 
   def generate_from_checkpoint(filepath, label, save_to=None):
     saved = torch.load(filepath, weights_only=False)
@@ -233,7 +265,7 @@ def train(args):
       print(f'{batch[1]}{output[1]}\n\n')
       sonnets.append((batch[0], f'{batch[1]}{output[1]}\n\n'))
     if save_to:
-      with open(save_to, 'w+') as f:
+      with open(save_to, 'w+', encoding='utf-8') as f:
         f.write('--Generated Sonnets-- \n\n')
         for sonnet_id, text in sonnets:
           f.write(f'\n{sonnet_id}\n{text}')
@@ -242,7 +274,7 @@ def train(args):
   generate_from_checkpoint(f'{args.epochs - 1}_{args.filepath}', f'epoch {args.epochs - 1} (last)', save_to=args.sonnet_out)
   score = test_sonnet(test_path=args.sonnet_out)
   print(f"ChrF score: {score:.2f}")
-  print_run_summary(args, epoch_losses)
+  print_run_summary(args, epoch_losses, epoch_times=epoch_times, total_train_time=total_train_time, peak_mem_gb=peak_mem_gb)
 
 
 @torch.no_grad()
@@ -269,7 +301,7 @@ def generate_submission_sonnets(args):
 
     print(f'{decoded_output}\n\n')
 
-  with open(args.sonnet_out, "w+") as f:
+  with open(args.sonnet_out, "w+", encoding='utf-8') as f:
     f.write(f"--Generated Sonnets-- \n\n")
     for sonnet in generated_sonnets:
       f.write(f"\n{sonnet[0]}\n")
@@ -295,6 +327,7 @@ def get_args():
   parser.add_argument("--batch_size", help='The training batch size.', type=int, default=8)
   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
   parser.add_argument("--use_lora", action='store_true', help="Use LoRA for finetuning.")
+  parser.add_argument("--lora_rank", type=int, default=8, help="LoRA rank (only used when --use_lora is set).")
   parser.add_argument("--model_size", type=str, help="The model size as specified on hugging face.",
                       choices=['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'], default='gpt2')
 
