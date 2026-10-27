@@ -1,11 +1,13 @@
 import torch
+from modules.lora import LoRALinear
 
 from einops import rearrange
 from torch import nn
 
 
 class CausalSelfAttention(nn.Module):
-  def __init__(self, config):
+  def __init__(self, config, use_lora = False, lora_rank = 8):
+    # added a flag to pass if using lora or not
     super().__init__()
 
     self.num_attention_heads = config.num_attention_heads
@@ -13,9 +15,14 @@ class CausalSelfAttention(nn.Module):
     self.all_head_size = self.num_attention_heads * self.attention_head_size
 
     # Initialize the linear transformation layers for key, value, query.
-    self.query = nn.Linear(config.hidden_size, self.all_head_size)
-    self.key = nn.Linear(config.hidden_size, self.all_head_size)
-    self.value = nn.Linear(config.hidden_size, self.all_head_size)
+    if use_lora:
+        self.query = LoRALinear(config.hidden_size, config.hidden_size, rank=lora_rank)
+        self.key   = LoRALinear(config.hidden_size, config.hidden_size, rank=lora_rank)
+        self.value = LoRALinear(config.hidden_size, config.hidden_size, rank=lora_rank)
+    else:
+        self.query = nn.Linear(config.hidden_size, config.hidden_size)
+        self.key   = nn.Linear(config.hidden_size, config.hidden_size)
+        self.value = nn.Linear(config.hidden_size, config.hidden_size)
     # This dropout is applied to normalized attention scores following the original
     # implementation of transformer. Although it is a bit unusual, we empirically
     # observe that it yields better performance.

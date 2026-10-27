@@ -18,7 +18,7 @@ class GPT2Model(GPTPreTrainedModel):
   3. A linear transformation layer for the [CLS] token (used in self.forward, as given).
   """
 
-  def __init__(self, config):
+  def __init__(self, config, use_lora=False, lora_rank=8):
     super().__init__(config)
     self.config = config
 
@@ -32,7 +32,7 @@ class GPT2Model(GPTPreTrainedModel):
     self.register_buffer('position_ids', position_ids)
 
     # GPT-2 layers.
-    self.gpt_layers = nn.ModuleList([GPT2Layer(config) for _ in range(config.num_hidden_layers)])
+    self.gpt_layers = nn.ModuleList([GPT2Layer(config, use_lora=use_lora, lora_rank=lora_rank) for _ in range(config.num_hidden_layers)])
 
     # [CLS] token transformations.
     self.pooler_dense = nn.Linear(config.hidden_size, config.hidden_size)
@@ -109,10 +109,10 @@ class GPT2Model(GPTPreTrainedModel):
 
 
   @classmethod
-  def from_pretrained(cls, model='gpt2', d=768, l=12, num_heads=12):
+  def from_pretrained(cls, model='gpt2', d=768, l=12, num_heads=12, use_lora=False, lora_rank=8):
     gpt_model = OpenAIGPT2Model.from_pretrained(model).eval()
     our_model = GPT2Model(GPT2Config(hidden_size=d, num_hidden_layers=l,num_attention_heads=num_heads,
-                                     intermediate_size=d*3)).eval()
+                                     intermediate_size=d*3), use_lora=use_lora, lora_rank=lora_rank).eval()
 
     # Load word and positional embeddings.
     our_model.word_embedding.load_state_dict(gpt_model.wte.state_dict())
